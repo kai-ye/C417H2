@@ -17,10 +17,11 @@ add_executable(ground_truth_publisher src/ground_truth_publisher.cpp)
 target_link_libraries(ground_truth_publisher ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
 
 add_executable(localizer_node src/localizer_node.cpp)
+target_compile_options(localizer_node PRIVATE -std=c++11)
 target_link_libraries(localizer_node ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
 
 ## c++11
-add_definitions(-std=c++11)
+#add_definitions(-std=c++11)
 
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed

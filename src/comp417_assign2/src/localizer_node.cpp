@@ -1,3 +1,4 @@
+/* vim: set expandtab tabstop=2 softtabstop=2 shiftwidth=2: */
 //Localizer given initial position
 
 #include <random>
@@ -15,12 +16,13 @@
 #define MOTION_TRANSLATION_VARIANCE 0.005
 #define POSITION_GRAPHIC_RADIUS 20.0
 #define HEADING_GRAPHIC_LENGTH 50.0
-
+#define REEF_Z -7.0
+#define ROBOT_Z -5.0
 
 class Particle
 {
 public:
-	float x, y, yaw, weight;
+  float x, y, z, yaw, weight;
 };
 
 
@@ -30,8 +32,12 @@ public:
 class Localizer
 {
 private:
-	Particle particles[NUM_PARTICLES];
-	float cumulativeWeights[NUM_PARTICLES + 1];
+  Particle particles[NUM_PARTICLES];
+  float cumulativeWeights[NUM_PARTICLES + 1];
+  const float K[3][3] = {{238.3515418007097, 0.0, 200.5},
+                         {0.0, 238.3515418007097, 200.5},
+                         {0.0, 0.0, 1.0}};    //intrinsic matrix of camera
+  const float camR[3] = {-0.32, 0.0, -0.06};  //camera's origin in robot frame
 
 public:
   ros::NodeHandle nh;
@@ -52,6 +58,17 @@ public:
     image_transport::ImageTransport it(nh);
     pub = it.advertise("/assign2/localization_result_image", 1);
     map_image = cv::imread(argv[1], CV_LOAD_IMAGE_COLOR);
+    localization_result_image = map_image.clone();
+    ground_truth_image = map_image.clone();
+
+    gt_img_sub = it.subscribe("/assign2/ground_truth_image", 1,
+              &Localizer::groundTruthImageCallback, this);
+    robot_img_sub = it.subscribe("/aqua/back_down/image_raw", 1,
+              &Localizer::robotImageCallback, this);
+    motion_command_sub = nh.subscribe<geometry_msgs::PoseStamped>("/aqua/target_pose", 1,
+              &Localizer::motionCommandCallback, this);
+
+    ROS_INFO( "localizer node constructed and subscribed." );
 
     //Acquire initial position.
     estimated_location.pose.position.x = 0;
@@ -59,19 +76,6 @@ public:
 
     //Initialize particles and cumulative weights.
     initParticles();
-
-    localization_result_image = map_image.clone();
-    ground_truth_image = map_image.clone();
-
-    gt_img_sub = it.subscribe("/assign2/ground_truth_image", 1,
-							&Localizer::groundTruthImageCallback, this);
-    robot_img_sub = it.subscribe("/aqua/back_down/image_raw", 1,
-							&Localizer::robotImageCallback, this);
-    motion_command_sub = nh.subscribe<geometry_msgs::PoseStamped>("/aqua/target_pose", 1,
-							&Localizer::motionCommandCallback, this);
-
-    ROS_INFO( "localizer node constructed and subscribed." );
-
   }
 
   //To initialize particles and cumulative weights. Starting location (0,0)
@@ -80,6 +84,7 @@ public:
     for (int i = 0; i < NUM_PARTICLES; i++) {
       particles[i].x = 0.0;
       particles[i].y = 0.0;
+      particles[i].z = ROBOT_Z;
       particles[i].yaw = 0.0;
       particles[i].weight = 1.0 / NUM_PARTICLES;
       cumulativeWeights[i + 1] = cumulativeWeights[i] + particles[i].weight;
@@ -105,7 +110,48 @@ public:
     return low;
   }
 
-  void updateParticles(const float forward, const float target_yaw) {
+  // Percentage by which a pixel matches a given pixel value.
+  // (I.e., probability of observing pixelToMatch given that
+  //pixelGiven is the expected actual pixel value.)
+  float match(cv::Vec3b const& pixelGiven, cv::Vec3b const& pixelToMatch) {
+    return 1.0;
+  }
+
+  // Pixel on the map corresponding to the point in the camera image.
+  cv::Vec3b imageToMap(int xI, int yI, Particle particle) {
+    float pointM[2];//point in map frame corresponding to image point
+    float pointW[3];//point in world frame corresponding to image point
+    float pointC[3];//point in camera frame corresponding to image point
+    float camW[3];//camera's origin, in world frame
+    float yaw = particle.yaw;
+
+    camW[0] = camR[0] * cos(yaw) - camR[1] * sin(yaw) + particle.x;
+    camW[1] = camR[0] * sin(yaw) + camR[1] * cos(yaw) + particle.y;
+    camW[2] = camR[2] + particle.z;
+
+    pointC[2] = camW[2] - REEF_Z;           //assuming planar motion
+    pointC[0] = (pointC[2] * xI - pointC[2] * K[0][2]) / K[0][0];
+    pointC[1] = (pointC[2] * yI - pointC[2] * K[1][2]) / K[1][1];
+
+    pointW[0] = pointC[0] * sin(yaw) - pointC[1] * cos(yaw) + camW[0];
+    pointW[1] = -pointC[1] * cos(yaw) - pointC[1] * sin(yaw) + camW[1];
+    pointW[2] = REEF_Z;   //equal to -pointC[2] + camW[2]
+
+    pointM[0] = map_image.size().width/2 + METRE_TO_PIXEL_SCALE * pointW[0];
+    pointM[1] = map_image.size().height/2 - METRE_TO_PIXEL_SCALE * pointW[1];
+
+    if (pointM[0] >= 0 && pointM[0] < map_image.size().width &&
+        pointM[1] >= 0 && pointM[1] < map_image.size().height) {
+      return map_image.at<cv::Vec3b>(pointM[1], pointM[0]);
+    }
+    else {
+      cv::Vec3b black(0,0,0);
+      return black;
+    }
+  }
+
+  // To propagate the motion model.
+  void updateParticles(float forward, float target_yaw) {
     float probYaw, probTrans;
     for (int i = 0; i < sizeof particles; i++) {
       //Yaw actually achieved, according to distribution
@@ -123,32 +169,32 @@ public:
   void drawParticleOnMap(int i) {
 /*    // The following three lines implement the basic motion model example
     estimated_location.pose.position.x = estimated_location.pose.position.x +
-				FORWARD_SWIM_SPEED_SCALING * command.pose.position.x * cos( -target_yaw );
+        FORWARD_SWIM_SPEED_SCALING * command.pose.position.x * cos( -target_yaw );
     estimated_location.pose.position.y = estimated_location.pose.position.y +
-				FORWARD_SWIM_SPEED_SCALING * command.pose.position.x * sin( -target_yaw );
+        FORWARD_SWIM_SPEED_SCALING * command.pose.position.x * sin( -target_yaw );
     estimated_location.pose.orientation = command.pose.orientation;
 
     // The remainder of this function is sample drawing code to plot your answer on the map image.
 */
     int estimated_robo_image_x = localization_result_image.size().width/2 +
-						METRE_TO_PIXEL_SCALE * particles[i].x;
+            METRE_TO_PIXEL_SCALE * particles[i].x;
     int estimated_robo_image_y = localization_result_image.size().height/2 -
-						METRE_TO_PIXEL_SCALE * particles[i].y;
+            METRE_TO_PIXEL_SCALE * particles[i].y;
 
     int estimated_heading_image_x = estimated_robo_image_x +
-						HEADING_GRAPHIC_LENGTH * cos(-particles[i].yaw);
+            HEADING_GRAPHIC_LENGTH * cos(-particles[i].yaw);
     int estimated_heading_image_y = estimated_robo_image_y +
-						HEADING_GRAPHIC_LENGTH * sin(-particles[i].yaw);
+            HEADING_GRAPHIC_LENGTH * sin(-particles[i].yaw);
 
     cv::circle( localization_result_image,
-				cv::Point(estimated_robo_image_x, estimated_robo_image_y),
-				POSITION_GRAPHIC_RADIUS *
-					particles[i].weight / cumulativeWeights[NUM_PARTICLES],
-				CV_RGB(250,0,0), -1);
+        cv::Point(estimated_robo_image_x, estimated_robo_image_y),
+        POSITION_GRAPHIC_RADIUS *
+          particles[i].weight / cumulativeWeights[NUM_PARTICLES],
+        CV_RGB(250,0,0), -1);
     cv::line( localization_result_image,
-			cv::Point(estimated_robo_image_x, estimated_robo_image_y),
-			cv::Point(estimated_heading_image_x, estimated_heading_image_y),
-			CV_RGB(250,0,0), 10);
+      cv::Point(estimated_robo_image_x, estimated_robo_image_y),
+      cv::Point(estimated_heading_image_x, estimated_heading_image_y),
+      CV_RGB(250,0,0), 10);
   }
 
   void robotImageCallback( const sensor_msgs::ImageConstPtr& robot_img )
@@ -241,7 +287,7 @@ public:
   // Function to return a probable translation value
   static float probableTranslation(const float mean) {
     return normalRand(mean, MOTION_TRANSLATION_VARIANCE);
-  } 
+  }
 
 
 };
