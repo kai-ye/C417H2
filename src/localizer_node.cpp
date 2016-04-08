@@ -10,7 +10,7 @@
 #include <tf/transform_listener.h>
 
 #define METRE_TO_PIXEL_SCALE 50
-#define NUM_PARTICLES 10000
+#define NUM_PARTICLES 50
 #define FORWARD_SWIM_SPEED_SCALING 0.1
 #define MOTION_YAW_VARIANCE 0.05
 #define MOTION_TRANSLATION_VARIANCE 0.05
@@ -22,7 +22,7 @@
 class Particle
 {
 public:
-  float x, y, z, yaw, weight;
+  double x, y, z, yaw, weight;
 };
 
 
@@ -33,11 +33,11 @@ class Localizer
 {
 private:
   Particle particles[NUM_PARTICLES];
-  float cumulativeWeights[NUM_PARTICLES + 1];
-  const float K[3][3] = {{238.3515418007097, 0.0, 200.5},
-                         {0.0, 238.3515418007097, 200.5},
-                         {0.0, 0.0, 1.0}};    //intrinsic matrix of camera
-  const float camR[3] = {-0.32, 0.0, -0.06};  //camera's origin in robot frame
+  double cumulativeWeights[NUM_PARTICLES + 1];
+  const double K[3][3] = {{238.3515418007097, 0.0, 200.5},
+                          {0.0, 238.3515418007097, 200.5},
+                          {0.0, 0.0, 1.0}};    //intrinsic matrix of camera
+  const double camR[3] = {-0.32, 0.0, -0.06};  //camera's origin in robot frame
 
 public:
   ros::NodeHandle nh;
@@ -97,9 +97,9 @@ public:
   int pickIndex() {
     int low = 0, high = NUM_PARTICLES, mid;
     std::mt19937 generator(std::random_device{}());
-    std::uniform_real_distribution<float> dist(0.0,
+    std::uniform_real_distribution<double> dist(0.0,
                                             cumulativeWeights[NUM_PARTICLES]);
-    float random = dist(generator);
+    double random = dist(generator);
 
     while (low + 1 < high) {
       mid = (low + high) / 2;   //certainly >= low + 1, and <= high - 1
@@ -115,17 +115,17 @@ public:
   // Percentage by which a pixel matches a given pixel value.
   // (I.e., probability of observing pixelToMatch given that
   //pixelGiven is the expected actual pixel value.)
-  float match(cv::Vec3b const& pixelGiven, cv::Vec3b const& pixelToMatch) {
+  double match(cv::Vec3b const& pixelGiven, cv::Vec3b const& pixelToMatch) {
     return 1.0;
   }
 
   // Pixel on the map corresponding to the point in the camera image.
-  cv::Vec3b imageToMap(int xI, int yI, Particle particle) {
-    float pointM[2];//point in map frame corresponding to image point
-    float pointW[3];//point in world frame corresponding to image point
-    float pointC[3];//point in camera frame corresponding to image point
-    float camW[3];//camera's origin, in world frame
-    float yaw = particle.yaw;
+  cv::Vec3b imageToMapPixel(int xI, int yI, Particle particle) {
+    double pointM[2];//point in map frame corresponding to image point
+    double pointW[3];//point in world frame corresponding to image point
+    double pointC[3];//point in camera frame corresponding to image point
+    double camW[3];//camera's origin, in world frame
+    double yaw = particle.yaw;
 
     camW[0] = camR[0] * cos(yaw) - camR[1] * sin(yaw) + particle.x;
     camW[1] = camR[0] * sin(yaw) + camR[1] * cos(yaw) + particle.y;
@@ -153,8 +153,8 @@ public:
   }
 
   // To propagate the motion model.
-  void updateParticles(float forward, float target_yaw) {
-    float probYaw, probTrans;
+  void updateParticles(double forward, double target_yaw) {
+    double probYaw, probTrans;
     for (int i = 0; i < NUM_PARTICLES; i++) {
       //Yaw actually achieved, according to distribution
       probYaw = probableYaw(target_yaw);
@@ -190,18 +190,47 @@ public:
 
     cv::circle( localization_result_image,
         cv::Point(estimated_robo_image_x, estimated_robo_image_y),
-        1/*POSITION_GRAPHIC_RADIUS *
+        POSITION_GRAPHIC_RADIUS/* *
           particles[i].weight / cumulativeWeights[NUM_PARTICLES]*/,
         CV_RGB(250,0,0), -1);
-    /*cv::line( localization_result_image,
+    cv::line( localization_result_image,
       cv::Point(estimated_robo_image_x, estimated_robo_image_y),
       cv::Point(estimated_heading_image_x, estimated_heading_image_y),
-      CV_RGB(250,0,0), 10);*/
+      CV_RGB(250,0,0), 10);
   }
 
   void robotImageCallback( const sensor_msgs::ImageConstPtr& robot_img )
   {
     // TODO: You must fill in the code here to implement an observation model for your localizer
+
+    cv_bridge::CvImagePtr cv_ptr;
+    try
+    {
+      cv_ptr = cv_bridge::toCvCopy(robot_img, sensor_msgs::image_encodings::BGR8);
+    }
+    catch (cv_bridge::Exception& e)
+    {
+      ROS_ERROR("cv_bridge exception: %s", e.what());
+      return;
+    }
+
+    localization_result_image = cv::Mat(cv_ptr->image);
+
+    buildEstimatesCameraImage();
+  }
+
+  void buildEstimatesCameraImage() {
+    Particle particle;
+    particle.x = particles[0].x;
+    particle.y = particles[0].y;
+    particle.z = particles[0].z;
+    particle.yaw = particles[0].yaw;
+    for (int xI = 0; xI < localization_result_image.size().width; xI++)
+      for (int yI = 0; yI < localization_result_image.size().height; yI++) {
+        cv::Vec3b pixel = imageToMapPixel(xI, yI, particle);
+        localization_result_image.at<cv::Vec3b>(yI, xI) = pixel;
+      }
+
   }
 
   // Function motionCommandCallback is a example of how to work with Aqua's motion commands (your view on the odometry).
@@ -236,11 +265,11 @@ public:
     updateParticles(command.pose.position.x, target_yaw);
 
     // Comment the one following line to plot your whole trajectory without ground truth
-    localization_result_image = ground_truth_image.clone();
+    //localization_result_image = ground_truth_image.clone();
 
     //Draw particles on result image.
     for (int i = 0; i < NUM_PARTICLES; i++) {
-      drawParticleOnMap(i);
+      //drawParticleOnMap(i);
     }
   }
 
@@ -275,20 +304,20 @@ public:
   }
 
   // Random value according to normal distribution
-  static float normalRand(const float mean, const float variance) {
+  static double normalRand(const double mean, const double variance) {
     std::mt19937 generator(std::random_device{}());
-    std::normal_distribution<float> distribution(mean, variance);
-    return distribution(generator);
-    //return mean;
+    std::normal_distribution<double> distribution(mean, variance);
+    //return distribution(generator);
+    return mean;
   }
 
   // Function to return a yaw according to some chosen distribution, given mean
-  static float probableYaw(const float mean) {
+  static double probableYaw(const double mean) {
     return normalRand(mean, MOTION_YAW_VARIANCE);
   }
 
   // Function to return a probable translation value
-  static float probableTranslation(const float mean) {
+  static double probableTranslation(const double mean) {
     return normalRand(mean, MOTION_TRANSLATION_VARIANCE);
   }
 
