@@ -120,7 +120,7 @@ public:
   }
 
   // Pixel on the map corresponding to the point in the camera image.
-  cv::Vec3b imageToMapPixel(int xI, int yI, Particle particle) {
+  cv::Vec3b imagePointToMapPixel(int xI, int yI, Particle particle) {
     double pointM[2];//point in map frame corresponding to image point
     double pointW[3];//point in world frame corresponding to image point
     double pointC[3];//point in camera frame corresponding to image point
@@ -136,19 +136,18 @@ public:
     pointC[1] = (pointC[2] * yI - pointC[2] * K[1][2]) / K[1][1];
 
     pointW[0] = pointC[0] * sin(yaw) - pointC[1] * cos(yaw) + camW[0];
-    pointW[1] = -pointC[1] * cos(yaw) - pointC[1] * sin(yaw) + camW[1];
+    pointW[1] = -pointC[0] * cos(yaw) - pointC[1] * sin(yaw) + camW[1];
     pointW[2] = REEF_Z;   //equal to -pointC[2] + camW[2]
 
     pointM[0] = map_image.size().width/2 + METRE_TO_PIXEL_SCALE * pointW[0];
     pointM[1] = map_image.size().height/2 - METRE_TO_PIXEL_SCALE * pointW[1];
 
-    if (pointM[0] >= 0 && pointM[0] < map_image.size().width &&
-        pointM[1] >= 0 && pointM[1] < map_image.size().height) {
-      return map_image.at<cv::Vec3b>(pointM[1], pointM[0]);
+    if (pointM[0] < 0 || pointM[0] >= map_image.size().width ||
+        pointM[1] < 0 || pointM[1] >= map_image.size().height) {
+      return cv::Vec3b(0,0,0);
     }
     else {
-      cv::Vec3b black(0,0,0);
-      return black;
+      return map_image.at<cv::Vec3b>(pointM[1], pointM[0]);
     }
   }
 
@@ -169,15 +168,6 @@ public:
 
   // Function to draw particle of given index on result image
   void drawParticleOnMap(int i) {
-/*    // The following three lines implement the basic motion model example
-    estimated_location.pose.position.x = estimated_location.pose.position.x +
-        FORWARD_SWIM_SPEED_SCALING * command.pose.position.x * cos( -target_yaw );
-    estimated_location.pose.position.y = estimated_location.pose.position.y +
-        FORWARD_SWIM_SPEED_SCALING * command.pose.position.x * sin( -target_yaw );
-    estimated_location.pose.orientation = command.pose.orientation;
-
-    // The remainder of this function is sample drawing code to plot your answer on the map image.
-*/
     int estimated_robo_image_x = localization_result_image.size().width/2 +
             METRE_TO_PIXEL_SCALE * particles[i].x;
     int estimated_robo_image_y = localization_result_image.size().height/2 -
@@ -216,19 +206,14 @@ public:
 
     localization_result_image = cv::Mat(cv_ptr->image);
 
-    buildEstimatesCameraImage();
+    buildEstimatesCameraImage(&localization_result_image, particles[0]);
   }
 
-  void buildEstimatesCameraImage() {
-    Particle particle;
-    particle.x = particles[0].x;
-    particle.y = particles[0].y;
-    particle.z = particles[0].z;
-    particle.yaw = particles[0].yaw;
-    for (int xI = 0; xI < localization_result_image.size().width; xI++)
-      for (int yI = 0; yI < localization_result_image.size().height; yI++) {
-        cv::Vec3b pixel = imageToMapPixel(xI, yI, particle);
-        localization_result_image.at<cv::Vec3b>(yI, xI) = pixel;
+  void buildEstimatesCameraImage(cv::Mat* image_ptr, Particle particle) {
+    for (int xI = 0; xI < image_ptr->size().width; xI++)
+      for (int yI = 0; yI < image_ptr->size().height; yI++) {
+        cv::Vec3b pixel = imagePointToMapPixel(xI, yI, particle);
+        image_ptr->at<cv::Vec3b>(yI, xI) = pixel;
       }
 
   }
