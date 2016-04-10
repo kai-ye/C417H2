@@ -1,1 +1,5 @@
 The nodes use random from c++11.
+
+ - Probability of observing a pixel value given an expected pixel value is computed using the pdf of a normal distribution, as P( pixel value is (bO,gO,rO) | currently in a state where the observed pixel value is expected to be (b, g, r) ) = exp( -((bO-b)^2 + (gO-g)^2 + (rO-r)^2)/2variance), for a fixed value of variance chosen by trial and error; (function match(), line...)
+
+ - Probability of observing a camera image given an expected camera image is computed as the geometric average of the probabilities for each pixel of the observed image within a particular width from the central pixel, this width defined by the value of FOCAL_HALF_WIDTH; (function robotImageCallback, line...)
