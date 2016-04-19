@@ -12,10 +12,12 @@
 #include <tf/transform_listener.h>
 
 #define METRE_TO_PIXEL_SCALE 50
-#define NUM_PARTICLES 100
+#define NUM_HORIZ 10
+#define NUM_VERT 20
+#define NUM_PARTICLES (NUM_HORIZ * NUM_VERT)
 #define FOCAL_HALF_WIDTH 10
 #define FORWARD_SWIM_SPEED_SCALING 0.07
-#define YAW_RATE 0.0000
+#define YAW_RATE 0.00001
 #define POSITION_GRAPHIC_RADIUS 20.0
 #define HEADING_GRAPHIC_LENGTH 50.0
 #define REEF_Z (-7.0)
@@ -159,22 +161,25 @@ public:
   void initParticles() {
     ROS_INFO("Initialializing particles.");
     ros::Time nowTime = ros::Time::now();
+    double width = map_image.size().width / METRE_TO_PIXEL_SCALE;
+    double height = map_image.size().height / METRE_TO_PIXEL_SCALE;
     cumulativeWeights[0] = 0.0;
-    for (int i = 0; i < NUM_PARTICLES; i++) {
-      double radius = normalRand(0.0, 0.7);
-      double theta = uniformRand(0.0, 2*M_PI);
-      double yaw = normalRand(0.0, VARIANCE_MOTION_YAW);
-      particles[i].x = radius * cos(theta);
-      particles[i].y = radius * sin(theta);
-      //particles[i].x = 0.0;                   // experimental
-      //particles[i].y = 0.0;                   // experimental
-      particles[i].z = ROBOT_Z;
-      particles[i].yaw = yaw;
-      particles[i].yaw = 0.0;
-      particles[i].weight = 1.0 / NUM_PARTICLES;
-      particles[i].lastTargetYaw = particles[i].yaw;
-      particles[i].yawStartTime = nowTime;
-      cumulativeWeights[i + 1] = cumulativeWeights[i] + particles[i].weight;
+    for (int i = 0; i < NUM_HORIZ; i++) {
+      for (int j = 0; j < NUM_VERT; j++) {
+        double xMean = width/NUM_HORIZ * (i + 0.5) - width/2;
+        double yMean = height/NUM_VERT * (j + 0.5) - height/2;
+        double radius = normalRand(0.0, 0.2);
+        double theta = uniformRand(0.0, 2*M_PI);
+        double yaw = uniformRand(0.0, 2 * M_PI);
+        particles[i].x = xMean + radius * cos(theta);
+        particles[i].y = yMean + radius * sin(theta);
+        particles[i].z = ROBOT_Z;
+        particles[i].yaw = yaw;
+        particles[i].weight = 1.0 / NUM_PARTICLES;
+        particles[i].lastTargetYaw = particles[i].yaw;
+        particles[i].yawStartTime = nowTime;
+        cumulativeWeights[i + 1] = cumulativeWeights[i] + particles[i].weight;
+      }
     }
   }
 
@@ -267,9 +272,6 @@ public:
       //Forward translation actually achieved, according to distribution
       probTrans = probableTranslation(FORWARD_SWIM_SPEED_SCALING * forward);
 
-      //probYaw = meanYaw;                                // experimental
-      //probTrans = FORWARD_SWIM_SPEED_SCALING * forward; // experimental
-
       particles[i].yaw = probYaw;
       particles[i].x+= probTrans * cos(probYaw);
       particles[i].y+= probTrans * sin(probYaw);
@@ -318,7 +320,7 @@ public:
     int xMid = cameraImage.size().width/2;
     int xStart = xMid - FOCAL_HALF_WIDTH;
     int xEnd = xMid + FOCAL_HALF_WIDTH;
-    int yMid = cameraImage.size().height/2; 
+    int yMid = cameraImage.size().height/2;
     int yStart = yMid - FOCAL_HALF_WIDTH;
     int yEnd = yMid + FOCAL_HALF_WIDTH;
 

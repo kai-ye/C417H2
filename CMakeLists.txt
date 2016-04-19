@@ -16,9 +16,17 @@ find_package(OpenCV)
 add_executable(ground_truth_publisher src/ground_truth_publisher.cpp)
 target_link_libraries(ground_truth_publisher ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
 
+add_executable(tester src/tester.cpp)
+target_compile_options(tester PRIVATE -std=c++11)
+target_link_libraries(tester ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
+
 add_executable(localizer_node src/localizer_node.cpp)
 target_compile_options(localizer_node PRIVATE -std=c++11)
 target_link_libraries(localizer_node ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
+
+add_executable(unknown_start_localizer_node src/unknown_start_localizer_node.cpp)
+target_compile_options(unknown_start_localizer_node PRIVATE -std=c++11)
+target_link_libraries(unknown_start_localizer_node ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
 
 ## c++11
 #add_definitions(-std=c++11)
