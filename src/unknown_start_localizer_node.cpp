@@ -12,10 +12,10 @@
 #include <tf/transform_listener.h>
 
 #define METRE_TO_PIXEL_SCALE 50
-#define NUM_HORIZ 50
-#define NUM_VERT 100
+#define NUM_HORIZ 25
+#define NUM_VERT 150
 #define NUM_PARTICLES (NUM_HORIZ * NUM_VERT)
-#define FOCAL_HALF_WIDTH 2
+#define FOCAL_HALF_WIDTH 10
 #define FORWARD_SWIM_SPEED_SCALING 0.056
 #define YAW_RATE 0.49
 #define YAW_DELAY 0.21
@@ -24,8 +24,9 @@
 #define REEF_Z (-7.0)
 #define ROBOT_Z (-5.0)
 #define VARIANCE_MOTION_YAW 0.1
-#define VARIANCE_MOTION_FORWARD .000001
-#define VARIANCE_PIXEL 20000.
+#define VARIANCE_MOTION_FORWARD 0.0001
+#define VARIANCE_POSITION .02
+#define VARIANCE_PIXEL 2000000.
 
 #define SQ(x) ((x) * (x))
 
@@ -157,7 +158,7 @@ public:
     ros::Time nowTime = ros::Time::now();
     double width = (double)map_image.size().width / METRE_TO_PIXEL_SCALE;
     double height = (double)map_image.size().height / METRE_TO_PIXEL_SCALE;
-    ROS_INFO("map width: %f, height: %f", width, height);
+    //ROS_INFO("map width: %f, height: %f", width, height);
     cumulativeWeights[0] = 0.0;
     for (int i = 0; i < NUM_HORIZ; i++) {
       for (int j = 0; j < NUM_VERT; j++) {
@@ -167,7 +168,7 @@ public:
         double theta = uniformRand(0.0, 2*M_PI);
         double yaw = uniformRand(0.0, 2 * M_PI);
         int k = i * NUM_VERT + j;
-        ROS_INFO("cell %d centered at %f, %f", k, xMean, yMean);
+        //ROS_INFO("cell %d centered at %f, %f", k, xMean, yMean);
         particles[k].x = xMean + radius * cos(theta);
         particles[k].y = yMean + radius * sin(theta);
         particles[k].z = ROBOT_Z;
@@ -181,7 +182,6 @@ public:
       }
     }
   }
-
 
   // To choose a particle index according to weights of the particles
   int pickIndex() {
@@ -280,14 +280,17 @@ public:
       //Yaw actually achieved, according to distribution
       probYaw = probableYaw(meanYaw);
       //Forward translation actually achieved, according to distribution
-      probTrans = probableTranslation(FORWARD_SWIM_SPEED_SCALING * forward);
+      // probTrans = probableTranslation(FORWARD_SWIM_SPEED_SCALING * forward);
 
       //probYaw = meanYaw;                                // experimental
-      //probTrans = FORWARD_SWIM_SPEED_SCALING * forward; // experimental
+      probTrans = FORWARD_SWIM_SPEED_SCALING * forward; // experimental
 
+      double radius = normalRand(0.0, VARIANCE_POSITION);
+      double theta = uniformRand(0.0, 2*M_PI);
+
+      particles[i].x+= probTrans * cos(meanYaw) + radius * cos(theta);
+      particles[i].y+= probTrans * sin(meanYaw) + radius * sin(theta);
       particles[i].yaw = probYaw;
-      particles[i].x+= probTrans * cos(probYaw);
-      particles[i].y+= probTrans * sin(probYaw);
     }
 
     movedSinceObservation = true;

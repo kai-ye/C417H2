@@ -23,7 +23,7 @@
 #define ROBOT_Z (-5.0)
 #define VARIANCE_MOTION_YAW 0.1
 #define VARIANCE_MOTION_FORWARD .000001
-#define VARIANCE_PIXEL 2000000.
+#define VARIANCE_PIXEL 200000.
 
 #define SQ(x) ((x) * (x))
 

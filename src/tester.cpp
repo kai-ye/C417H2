@@ -12,9 +12,9 @@
 #include <tf/transform_listener.h>
 
 #define METRE_TO_PIXEL_SCALE 50
-#define NUM_PARTICLES 100
+#define NUM_PARTICLES 400
 #define FOCAL_HALF_WIDTH 10
-#define FORWARD_SWIM_SPEED_SCALING 0.061
+#define FORWARD_SWIM_SPEED_SCALING 0.056
 #define YAW_RATE 0.49
 #define YAW_DELAY 0.21
 #define POSITION_GRAPHIC_RADIUS 20.0
@@ -22,8 +22,9 @@
 #define REEF_Z (-7.0)
 #define ROBOT_Z (-5.0)
 #define VARIANCE_MOTION_YAW 0.1
-#define VARIANCE_MOTION_FORWARD .05
-#define VARIANCE_PIXEL 10.
+#define VARIANCE_MOTION_FORWARD 0.0001
+#define VARIANCE_POSITION .02
+#define VARIANCE_PIXEL 2000000.
 
 #define SQ(x) ((x) * (x))
 
@@ -121,11 +122,11 @@ public:
 
   ros::Subscriber motion_command_sub;
 
-  geometry_msgs::PoseStamped estimated_location;
-
   cv::Mat map_image;
   cv::Mat ground_truth_image;
   cv::Mat localization_result_image;
+
+  bool movedSinceObservation = false;
 
   Localizer( int argc, char** argv )
   {
@@ -144,10 +145,6 @@ public:
 
     ROS_INFO( "Localizer node constructed and subscribed." );
 
-    //Acquire initial position.
-    estimated_location.pose.position.x = 0;
-    estimated_location.pose.position.y = 0;
-
     //Initialize particles and cumulative weights.
     initParticles();
     ROS_INFO("Particles initialized.");
@@ -159,21 +156,23 @@ public:
     ros::Time nowTime = ros::Time::now();
     cumulativeWeights[0] = 0.0;
     for (int i = 0; i < NUM_PARTICLES; i++) {
-      double radius = normalRand(0.0, 0.7);
+      double radius = normalRand(0.0, .5);
+      // if (std::abs(radius) > .5) radius = 0.0;
       double theta = uniformRand(0.0, 2*M_PI);
       double yaw = normalRand(0.0, VARIANCE_MOTION_YAW);
-      //particles[i].x = radius * cos(theta);
-      //particles[i].y = radius * sin(theta);
-      particles[i].x = 0.0;                   // experimental
-      particles[i].y = 0.0;                   // experimental
+      particles[i].x = radius * cos(theta);
+      particles[i].y = radius * sin(theta);
+      //particles[i].x = 0.0;                   // experimental
+      //particles[i].y = 0.0;                   // experimental
       particles[i].z = ROBOT_Z;
       particles[i].yaw = yaw;
       particles[i].yaw = 0.0;
-      particles[i].weight = 1.0 / NUM_PARTICLES;
       particles[i].penultimateTargetYaw = particles[i].yaw;
       particles[i].lastTargetYaw = particles[i].yaw;
       particles[i].yawStartTime = nowTime;
+      particles[i].weight = 1.0 / NUM_PARTICLES;
       cumulativeWeights[i + 1] = cumulativeWeights[i] + particles[i].weight;
+      drawParticleOnMap(i);
     }
   }
 
@@ -247,6 +246,12 @@ public:
 
   // To propagate the motion model.
   void updateParticles(double forward, double target_yaw) {
+    static double lastTargetYaw = 10.;
+    if (forward == 0.0 && target_yaw == lastTargetYaw) {
+      return;
+    }
+    lastTargetYaw = target_yaw;
+
     ros::Time nowTime = ros::Time::now();
     double probYaw, probTrans;
     for (int i = 0; i < NUM_PARTICLES; i++) {
@@ -259,7 +264,6 @@ public:
                             yawIncrement);
  
       if (particles[i].lastTargetYaw != target_yaw) {  //if new target yaw
-        ROS_INFO("%.20fs from %.20f to %.20f, turned %.20f", (nowTime-particles[i].yawStartTime).toSec(), particles[i].penultimateTargetYaw, particles[i].lastTargetYaw, yawIncrement);
         particles[i].yawStartTime = nowTime;
         particles[i].penultimateTargetYaw = particles[i].lastTargetYaw;
         particles[i].penultimateTargetYaw = meanYaw;
@@ -268,18 +272,21 @@ public:
      
       //Yaw actually achieved, according to distribution
       probYaw = probableYaw(meanYaw);
-      probYaw = meanYaw;
       //Forward translation actually achieved, according to distribution
-      probTrans = probableTranslation(FORWARD_SWIM_SPEED_SCALING * forward);
-      probTrans = FORWARD_SWIM_SPEED_SCALING * forward;
+      // probTrans = probableTranslation(FORWARD_SWIM_SPEED_SCALING * forward);
 
       //probYaw = meanYaw;                                // experimental
-      //probTrans = FORWARD_SWIM_SPEED_SCALING * forward; // experimental
+      probTrans = FORWARD_SWIM_SPEED_SCALING * forward; // experimental
 
+      double radius = normalRand(0.0, VARIANCE_POSITION);
+      double theta = uniformRand(0.0, 2*M_PI);
+
+      particles[i].x+= probTrans * cos(meanYaw) + radius * cos(theta);
+      particles[i].y+= probTrans * sin(meanYaw) + radius * sin(theta);
       particles[i].yaw = probYaw;
-      particles[i].x+= probTrans * cos(probYaw);
-      particles[i].y+= probTrans * sin(probYaw);
     }
+
+    movedSinceObservation = true;
   }
 
   // Function to draw particle of given index on result image
@@ -308,6 +315,9 @@ public:
   // Camera image callback
   void robotImageCallback( const sensor_msgs::ImageConstPtr& robot_img )
   {
+    if (!movedSinceObservation)
+      return;
+
     cv_bridge::CvImagePtr cv_ptr;
     cv::Mat cameraImage;
     try
@@ -330,6 +340,7 @@ public:
 
     //Propagate observation model: resample, and update weights.
     Particle newParticles[NUM_PARTICLES];
+    int iMax = 0;
     for (int i = 0; i < NUM_PARTICLES; i++) {
       newParticles[i] = particles[pickIndex()];
     }
@@ -345,11 +356,15 @@ public:
         }
       }
       particles[i].weight = newWeight;
+      if (particles[i].weight > particles[iMax].weight)
+        iMax = i;
       cumulativeWeights[i+1] = cumulativeWeights[i] + particles[i].weight;
     }
 
     /* localization_result_image = cv::Mat(cv_ptr->image);
     buildEstimatesCameraImage(&localization_result_image, particles[0]); */
+
+    movedSinceObservation = false;
   }
 
   // Helper to rebuild camera image given estimated pose
