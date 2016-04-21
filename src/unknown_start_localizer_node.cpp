@@ -12,20 +12,20 @@
 #include <tf/transform_listener.h>
 
 #define METRE_TO_PIXEL_SCALE 50
-#define NUM_HORIZ 10
-#define NUM_VERT 20
+#define NUM_HORIZ 50
+#define NUM_VERT 100
 #define NUM_PARTICLES (NUM_HORIZ * NUM_VERT)
-#define FOCAL_HALF_WIDTH 10
-#define FORWARD_SWIM_SPEED_SCALING 0.07
-#define YAW_RATE 0.00001
+#define FOCAL_HALF_WIDTH 2
+#define FORWARD_SWIM_SPEED_SCALING 0.056
+#define YAW_RATE 0.49
+#define YAW_DELAY 0.21
 #define POSITION_GRAPHIC_RADIUS 20.0
 #define HEADING_GRAPHIC_LENGTH 50.0
 #define REEF_Z (-7.0)
 #define ROBOT_Z (-5.0)
 #define VARIANCE_MOTION_YAW 0.1
-#define VARIANCE_MOTION_FORWARD .05
-#define VARIANCE_PIXEL 10.
-#define SIZE_MATCH_CACHE (3*255*255+1)
+#define VARIANCE_MOTION_FORWARD .000001
+#define VARIANCE_PIXEL 20000.
 
 #define SQ(x) ((x) * (x))
 
@@ -97,7 +97,7 @@ class Particle
 {
 public:
   double x, y, z, yaw, weight;
-  double lastTargetYaw;
+  double lastTargetYaw, penultimateTargetYaw;
   ros::Time yawStartTime;
 };
 
@@ -108,7 +108,6 @@ public:
 class Localizer
 {
 private:
-  static double matchCache[SIZE_MATCH_CACHE];  // experimental
   Particle particles[NUM_PARTICLES];
   double cumulativeWeights[NUM_PARTICLES + 1];
   const double K[3][3] = {{238.3515418007097, 0.0, 200.5},
@@ -124,15 +123,14 @@ public:
 
   ros::Subscriber motion_command_sub;
 
-  geometry_msgs::PoseStamped estimated_location;
-
   cv::Mat map_image;
   cv::Mat ground_truth_image;
   cv::Mat localization_result_image;
 
+  bool movedSinceObservation = false;
+
   Localizer( int argc, char** argv )
   {
-    std::fill_n(matchCache, SIZE_MATCH_CACHE, -1.0);  // experimental
     image_transport::ImageTransport it(nh);
     pub = it.advertise("/assign2/localization_result_image", 1);
     map_image = cv::imread(argv[1], CV_LOAD_IMAGE_COLOR);
@@ -148,10 +146,6 @@ public:
 
     ROS_INFO( "Localizer node constructed and subscribed." );
 
-    //Acquire initial position.
-    estimated_location.pose.position.x = 0;
-    estimated_location.pose.position.y = 0;
-
     //Initialize particles and cumulative weights.
     initParticles();
     ROS_INFO("Particles initialized.");
@@ -161,27 +155,33 @@ public:
   void initParticles() {
     ROS_INFO("Initialializing particles.");
     ros::Time nowTime = ros::Time::now();
-    double width = map_image.size().width / METRE_TO_PIXEL_SCALE;
-    double height = map_image.size().height / METRE_TO_PIXEL_SCALE;
+    double width = (double)map_image.size().width / METRE_TO_PIXEL_SCALE;
+    double height = (double)map_image.size().height / METRE_TO_PIXEL_SCALE;
+    ROS_INFO("map width: %f, height: %f", width, height);
     cumulativeWeights[0] = 0.0;
     for (int i = 0; i < NUM_HORIZ; i++) {
       for (int j = 0; j < NUM_VERT; j++) {
-        double xMean = width/NUM_HORIZ * (i + 0.5) - width/2;
-        double yMean = height/NUM_VERT * (j + 0.5) - height/2;
+        double xMean = (width/NUM_HORIZ) * i + width * (.5/NUM_HORIZ - .5);
+        double yMean = (height/NUM_VERT) * j + height * (.5/NUM_VERT - .5);
         double radius = normalRand(0.0, 0.2);
         double theta = uniformRand(0.0, 2*M_PI);
         double yaw = uniformRand(0.0, 2 * M_PI);
-        particles[i].x = xMean + radius * cos(theta);
-        particles[i].y = yMean + radius * sin(theta);
-        particles[i].z = ROBOT_Z;
-        particles[i].yaw = yaw;
-        particles[i].weight = 1.0 / NUM_PARTICLES;
-        particles[i].lastTargetYaw = particles[i].yaw;
-        particles[i].yawStartTime = nowTime;
-        cumulativeWeights[i + 1] = cumulativeWeights[i] + particles[i].weight;
+        int k = i * NUM_VERT + j;
+        ROS_INFO("cell %d centered at %f, %f", k, xMean, yMean);
+        particles[k].x = xMean + radius * cos(theta);
+        particles[k].y = yMean + radius * sin(theta);
+        particles[k].z = ROBOT_Z;
+        particles[k].yaw = yaw;
+        particles[k].penultimateTargetYaw = particles[k].yaw;
+        particles[k].lastTargetYaw = particles[k].yaw;
+        particles[k].yawStartTime = nowTime;
+        particles[k].weight = 1.0 / NUM_PARTICLES;
+        cumulativeWeights[k + 1] = cumulativeWeights[k] + particles[k].weight;
+        drawParticleOnMap(k);
       }
     }
   }
+
 
   // To choose a particle index according to weights of the particles
   int pickIndex() {
@@ -205,19 +205,18 @@ public:
   // In fact num-th root of that percentage is returned, making it
   //convenient for computing geometric mean of many such percentages.
   double match(cv::Vec3b pixelGiven, cv::Vec3b pixelToMatch, int num) {
-    int key;
+    /* int key;
     key = (pixelToMatch[0]-pixelGiven[0])*(pixelToMatch[0]-pixelGiven[0]) +
           (pixelToMatch[1]-pixelGiven[1])*(pixelToMatch[1]-pixelGiven[1]) +
           (pixelToMatch[2]-pixelGiven[2])*(pixelToMatch[2]-pixelGiven[2]);
     if (matchCache[key] < 0.0) {
       matchCache[key] = exp(-((double) key) / (2 * VARIANCE_PIXEL * num));
     }
-    return matchCache[key];
-    /* return exp( -(double) (
-              (pixelToMatch[0]-pixelGiven[0])*(pixelToMatch[0]-pixelGiven[0]) +
-              (pixelToMatch[1]-pixelGiven[1])*(pixelToMatch[1]-pixelGiven[1]) +
-              (pixelToMatch[2]-pixelGiven[2])*(pixelToMatch[2]-pixelGiven[2])) /
-              (2. * VARIANCE_PIXEL * num)); */
+    return matchCache[key]; */
+    return exp( -(double) (SQ (pixelToMatch[0] - pixelGiven[0]) +
+                           SQ (pixelToMatch[1] - pixelGiven[1]) +
+                           SQ (pixelToMatch[2] - pixelGiven[2])) /
+                            (2. * VARIANCE_PIXEL * num));
   }
 
   // Pixel on the map corresponding to the point in the camera image.
@@ -254,16 +253,27 @@ public:
 
   // To propagate the motion model.
   void updateParticles(double forward, double target_yaw) {
+    static double lastTargetYaw = 10.;
+    if (forward == 0.0 && target_yaw == lastTargetYaw) {
+      return;
+    }
+    lastTargetYaw = target_yaw;
+
     ros::Time nowTime = ros::Time::now();
     double probYaw, probTrans;
     for (int i = 0; i < NUM_PARTICLES; i++) {
-      double yawIncrement = YAW_RATE *
-                          (nowTime - particles[i].yawStartTime).toSec();
+      double timeLapse = (nowTime - particles[i].yawStartTime).toSec();
+      double yawIncrement = (timeLapse > YAW_DELAY) ?
+                                YAW_RATE * (timeLapse - YAW_DELAY) : 0.0;
       double meanYaw = incrementedAngleFromCurrToTarget(
-                            particles[i].lastTargetYaw, target_yaw, yawIncrement);
+                            particles[i].penultimateTargetYaw,
+                            particles[i].lastTargetYaw,
+                            yawIncrement);
  
-      if (meanYaw == target_yaw) {  //if target yaw reached by now
+      if (particles[i].lastTargetYaw != target_yaw) {  //if new target yaw
         particles[i].yawStartTime = nowTime;
+        particles[i].penultimateTargetYaw = particles[i].lastTargetYaw;
+        particles[i].penultimateTargetYaw = meanYaw;
         particles[i].lastTargetYaw = target_yaw;
       }
      
@@ -272,10 +282,15 @@ public:
       //Forward translation actually achieved, according to distribution
       probTrans = probableTranslation(FORWARD_SWIM_SPEED_SCALING * forward);
 
+      //probYaw = meanYaw;                                // experimental
+      //probTrans = FORWARD_SWIM_SPEED_SCALING * forward; // experimental
+
       particles[i].yaw = probYaw;
       particles[i].x+= probTrans * cos(probYaw);
       particles[i].y+= probTrans * sin(probYaw);
     }
+
+    movedSinceObservation = true;
   }
 
   // Function to draw particle of given index on result image
@@ -295,15 +310,18 @@ public:
         4 /* POSITION_GRAPHIC_RADIUS *
           particles[i].weight / cumulativeWeights[NUM_PARTICLES] */,
         CV_RGB(250,0,0), -1);
-    /* cv::line( localization_result_image,
+    cv::line( localization_result_image,
       cv::Point(estimated_robo_image_x, estimated_robo_image_y),
       cv::Point(estimated_heading_image_x, estimated_heading_image_y),
-      CV_RGB(250,0,0), 10); */
+      CV_RGB(250,0,0), 10);
   }
 
   // Camera image callback
   void robotImageCallback( const sensor_msgs::ImageConstPtr& robot_img )
   {
+    if (!movedSinceObservation)
+      return;
+
     cv_bridge::CvImagePtr cv_ptr;
     cv::Mat cameraImage;
     try
@@ -320,12 +338,13 @@ public:
     int xMid = cameraImage.size().width/2;
     int xStart = xMid - FOCAL_HALF_WIDTH;
     int xEnd = xMid + FOCAL_HALF_WIDTH;
-    int yMid = cameraImage.size().height/2;
+    int yMid = cameraImage.size().height/2; 
     int yStart = yMid - FOCAL_HALF_WIDTH;
     int yEnd = yMid + FOCAL_HALF_WIDTH;
 
     //Propagate observation model: resample, and update weights.
     Particle newParticles[NUM_PARTICLES];
+    int iMax = 0;
     for (int i = 0; i < NUM_PARTICLES; i++) {
       newParticles[i] = particles[pickIndex()];
     }
@@ -337,15 +356,19 @@ public:
           newWeight*= match(
             imagePointToMapPixel(xI, yI, particles[i]),
             cameraImage.at<cv::Vec3b>(yI, xI),
-            2*FOCAL_HALF_WIDTH*(1+sqrt(SQ(xI-xMid)+SQ(yI-yMid))));
+            FOCAL_HALF_WIDTH * (1 + sqrt(SQ (xI - xMid) + SQ (yI - yMid))));
         }
       }
       particles[i].weight = newWeight;
+      if (particles[i].weight > particles[iMax].weight)
+        iMax = i;
       cumulativeWeights[i+1] = cumulativeWeights[i] + particles[i].weight;
     }
 
     /* localization_result_image = cv::Mat(cv_ptr->image);
     buildEstimatesCameraImage(&localization_result_image, particles[0]); */
+
+    movedSinceObservation = false;
   }
 
   // Helper to rebuild camera image given estimated pose
@@ -414,7 +437,6 @@ public:
 
 };
 
-double Localizer::matchCache[];
 
 int main(int argc, char** argv)
 {
